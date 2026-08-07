@@ -80,3 +80,5 @@ Search/download logic pattern based on
 (MIT licensed). `wget` and `yt-dlp` binaries carried over unmodified from
 that pak. `minui-list` / `minui-keyboard` / `minui-presenter` by
 [josegonzalez](https://github.com/josegonzalez).
+
+Claude for Vibecoding this.
