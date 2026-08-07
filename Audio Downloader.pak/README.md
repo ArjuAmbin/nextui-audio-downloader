@@ -37,32 +37,26 @@ by josegonzalez, bundled
 
 - **Search Music** types a term on the on-screen keyboard → pick a result
   from the list → it downloads to `Music/Downloaded`.
-- **Music History** re-runs one of your last 10 music searches live,
-  without retyping it. Press **X** to clear the whole list instantly (no
-  confirmation prompt).
 - **Search Podcast** types a show name → pick a show (confirm opens its
   episode list directly; press **X** to toggle Subscribe/Unsubscribe on
   the highlighted show without leaving the list) → pick an episode → it
   downloads to `Podcasts/<Show Name>/`.
-- **Podcast History** re-runs one of your last 10 podcast searches live;
-  **X** clears it instantly, same as Music History.
 - **Podcast Subscriptions** lists shows you've subscribed to — confirm
   always re-fetches that show's RSS feed fresh (so new episodes show up
   without searching for the show again), **X** unsubscribes the
   highlighted show directly from the list.
-- Search history is per-type (music and podcast keep separate lists),
-  capped at 10 entries, most recent first; re-running a search moves it
-  back to the top instead of adding a duplicate.
 - **Files** → **Music** lists everything in `Music/Downloaded`; **Podcasts**
-  lists show folders, then the episodes inside one. Picking a file opens
-  **Rename** / **Delete**. Renaming keeps the original file extension and
-  refuses to overwrite an existing file. Deleting the last episode in a
-  show folder also removes the now-empty folder.
+  lists show folders, then the episodes inside one. On the file list,
+  **A/Confirm renames** the highlighted file directly and **X deletes**
+  it directly — both act immediately, no extra menu screen. Renaming
+  keeps the original file extension and refuses to overwrite an existing
+  file. Deleting the last episode in a show folder also removes the
+  now-empty folder. **Files** also has **Update yt-dlp**.
 - Files already downloaded (matched by sanitized filename) won't be
   re-downloaded.
-- Search history and podcast subscriptions are stored in this pak's
-  userdata folder (`.userdata/tg5040/Audio Downloader/`), so they survive
-  reboots but are separate per-device/per-SD-card.
+- Podcast subscriptions are stored in this pak's userdata folder
+  (`.userdata/tg5040/Audio Downloader/`), so they survive reboots but are
+  separate per-device/per-SD-card.
 - Logs are written to `.userdata/tg5040/logs/Audio Downloader.txt` if
   something goes wrong — check there first.
 

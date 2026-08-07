@@ -62,10 +62,8 @@ mkdir -p "$WORK"
 MUSIC_DIR="$SDCARD_PATH/Music/Downloaded"
 PODCAST_DIR="$SDCARD_PATH/Podcasts"
 
-# persisted in $HOME (not $WORK, which is /tmp and gets wiped) so search
-# history and subscriptions survive across launches/reboots
-MUSIC_HISTORY_FILE="$HOME/music_search_history.txt"
-PODCAST_HISTORY_FILE="$HOME/podcast_search_history.txt"
+# persisted in $HOME (not $WORK, which is /tmp and gets wiped) so
+# subscriptions survive across launches/reboots
 PODCAST_SUBS_FILE="$HOME/podcast_subscriptions.tsv"
 
 # ---------------------------------------------------------------------------
@@ -158,18 +156,6 @@ ask_text() {
     return $rc
 }
 
-add_history() {
-    # $1 = history file, $2 = query -> move $2 to the top (deduped),
-    # capped at 10 entries. Tmp file is a sibling of $1 so the final mv
-    # stays on the same filesystem as $HOME (unlike $WORK, which is /tmp).
-    file="$1"
-    query="$2"
-    [ -z "$query" ] && return
-    { printf '%s\n' "$query"; [ -f "$file" ] && grep -vFx "$query" "$file"; } \
-        | head -n 10 >"$file.tmp"
-    mv "$file.tmp" "$file"
-}
-
 # ---------------------------------------------------------------------------
 # music: search + download via YouTube Music (same source the original
 # Music Player pak used)
@@ -245,32 +231,7 @@ music_search_entry() {
     rc=$?
     [ $rc -ne 0 ] && return
     [ -z "$query" ] && return
-    add_history "$MUSIC_HISTORY_FILE" "$query"
     music_search_flow "$query"
-}
-
-music_history_flow() {
-    while true; do
-        if [ ! -s "$MUSIC_HISTORY_FILE" ]; then
-            show_message "No search history yet" 2
-            return
-        fi
-
-        pick_from_list "Music History" "SEARCH AGAIN" "$MUSIC_HISTORY_FILE" "X" "CLEAR ALL"
-        rc=$?
-        if [ $rc -eq 4 ]; then
-            rm -f "$MUSIC_HISTORY_FILE"
-            show_message "History cleared" 1
-            continue
-        elif [ $rc -ne 0 ]; then
-            return
-        fi
-
-        query="$(cat "$WORK/selected.txt")"
-        [ -z "$query" ] && continue
-        add_history "$MUSIC_HISTORY_FILE" "$query"
-        music_search_flow "$query"
-    done
 }
 
 # ---------------------------------------------------------------------------
@@ -494,32 +455,7 @@ podcast_search_entry() {
     rc=$?
     [ $rc -ne 0 ] && return
     [ -z "$query" ] && return
-    add_history "$PODCAST_HISTORY_FILE" "$query"
     podcast_search_flow "$query"
-}
-
-podcast_history_flow() {
-    while true; do
-        if [ ! -s "$PODCAST_HISTORY_FILE" ]; then
-            show_message "No search history yet" 2
-            return
-        fi
-
-        pick_from_list "Podcast History" "SEARCH AGAIN" "$PODCAST_HISTORY_FILE" "X" "CLEAR ALL"
-        rc=$?
-        if [ $rc -eq 4 ]; then
-            rm -f "$PODCAST_HISTORY_FILE"
-            show_message "History cleared" 1
-            continue
-        elif [ $rc -ne 0 ]; then
-            return
-        fi
-
-        query="$(cat "$WORK/selected.txt")"
-        [ -z "$query" ] && continue
-        add_history "$PODCAST_HISTORY_FILE" "$query"
-        podcast_search_flow "$query"
-    done
 }
 
 # ---------------------------------------------------------------------------
@@ -586,25 +522,10 @@ delete_file() {
     esac
 }
 
-file_actions() {
-    # $1 = dir, $2 = filename
-    dir="$1"
-    name="$2"
-
-    printf 'Rename\nDelete\n' >"$WORK/file_action_menu.txt"
-    pick_from_list "$name" "SELECT" "$WORK/file_action_menu.txt"
-    rc=$?
-    [ $rc -ne 0 ] && return
-
-    action="$(cat "$WORK/selected.txt")"
-    case "$action" in
-        Rename) rename_file "$dir" "$name" ;;
-        Delete) delete_file "$dir" "$name" ;;
-    esac
-}
-
 browse_files_dir() {
-    # $1 = dir, $2 = title -> list plain files in $dir, act on the pick
+    # $1 = dir, $2 = title -> list plain files in $dir. Confirm renames the
+    # highlighted file, X deletes it -- both act directly from this list,
+    # no separate action-menu screen.
     dir="$1"
     title="$2"
 
@@ -619,15 +540,19 @@ browse_files_dir() {
             return
         fi
 
-        pick_from_list "$title" "SELECT" "$WORK/files_list.txt"
+        pick_from_list "$title" "RENAME" "$WORK/files_list.txt" "X" "DELETE"
         rc=$?
-        [ $rc -ne 0 ] && return
+        [ $rc -ne 0 ] && [ $rc -ne 4 ] && return
 
         selected_file="$(cat "$WORK/selected.txt")"
         [ -z "$selected_file" ] && continue
         [ -f "$dir/$selected_file" ] || continue
 
-        file_actions "$dir" "$selected_file"
+        if [ "$rc" -eq 4 ]; then
+            delete_file "$dir" "$selected_file"
+        else
+            rename_file "$dir" "$selected_file"
+        fi
     done
 }
 
@@ -655,7 +580,7 @@ browse_podcast_shows() {
 }
 
 files_flow() {
-    printf 'Music\nPodcasts\n' >"$WORK/files_menu.txt"
+    printf 'Music\nPodcasts\nUpdate yt-dlp\n' >"$WORK/files_menu.txt"
     while true; do
         pick_from_list "Files" "OPEN" "$WORK/files_menu.txt"
         rc=$?
@@ -665,6 +590,7 @@ files_flow() {
         case "$choice" in
             "Music") browse_files_dir "$MUSIC_DIR" "Music" ;;
             "Podcasts") browse_podcast_shows ;;
+            "Update yt-dlp") update_ytdlp ;;
         esac
     done
 }
@@ -723,7 +649,7 @@ if ! command -v minui-presenter >/dev/null 2>&1; then
 fi
 echo "all three minui-* tools found, entering main menu" >>"$PAK_DIR/debug.txt"
 
-printf 'Search Music\nMusic History\nSearch Podcast\nPodcast History\nPodcast Subscriptions\nFiles\nUpdate yt-dlp\n' >"$WORK/main_menu.txt"
+printf 'Search Music\nSearch Podcast\nPodcast Subscriptions\nFiles\n' >"$WORK/main_menu.txt"
 
 while true; do
     pick_from_list "Audio Downloader" "SELECT" "$WORK/main_menu.txt"
@@ -733,12 +659,9 @@ while true; do
     choice="$(cat "$WORK/selected.txt")"
     case "$choice" in
         "Search Music") music_search_entry ;;
-        "Music History") music_history_flow ;;
         "Search Podcast") podcast_search_entry ;;
-        "Podcast History") podcast_history_flow ;;
         "Podcast Subscriptions") podcast_subscriptions_flow ;;
         "Files") files_flow ;;
-        "Update yt-dlp") update_ytdlp ;;
     esac
 done
 
