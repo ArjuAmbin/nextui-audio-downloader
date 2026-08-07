@@ -1,0 +1,9 @@
+{
+  "name": "Audio Downloader",
+  "version": "v1.0.0",
+  "type": "TOOL",
+  "description": "Search and download music (via YouTube Music) and podcast episodes (via iTunes/RSS) straight to your SD card. Download-only, no built-in player.",
+  "platforms": [
+    "tg5040"
+  ]
+}
