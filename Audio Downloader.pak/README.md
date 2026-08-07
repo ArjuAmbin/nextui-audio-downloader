@@ -39,6 +39,11 @@ by josegonzalez, bundled
   result from the list → it downloads to `Music/Downloaded`.
 - **Search Podcast** → type a show name → pick the show → pick an episode →
   it downloads to `Podcasts/<Show Name>/`.
+- **Files** → **Music** lists everything in `Music/Downloaded`; **Podcasts**
+  lists show folders, then the episodes inside one. Picking a file opens
+  **Rename** / **Delete**. Renaming keeps the original file extension and
+  refuses to overwrite an existing file. Deleting the last episode in a
+  show folder also removes the now-empty folder.
 - Files already downloaded (matched by sanitized filename) won't be
   re-downloaded.
 - Logs are written to `.userdata/tg5040/logs/Audio Downloader.txt` if

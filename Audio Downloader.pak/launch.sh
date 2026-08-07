@@ -340,6 +340,153 @@ $selected_ep" forever
 }
 
 # ---------------------------------------------------------------------------
+# files: browse Music/Downloaded and Podcasts/<Show>, rename or delete
+# ---------------------------------------------------------------------------
+
+rename_file() {
+    # $1 = dir, $2 = current filename
+    dir="$1"
+    old_name="$2"
+
+    case "$old_name" in
+        *.*) ext="${old_name##*.}" ;;
+        *) ext="" ;;
+    esac
+
+    new_base="$(ask_text "New name for:
+$old_name")"
+    rc=$?
+    [ $rc -ne 0 ] && return
+    [ -z "$new_base" ] && return
+
+    safe_base="$(sanitize "$new_base")"
+    if [ -z "$safe_base" ]; then
+        show_message "Invalid name" 2
+        return
+    fi
+    new_name="$safe_base${ext:+.$ext}"
+
+    [ "$new_name" = "$old_name" ] && return
+
+    if [ -e "$dir/$new_name" ]; then
+        show_message "A file named
+$new_name
+already exists" 2
+        return
+    fi
+
+    if mv "$dir/$old_name" "$dir/$new_name"; then
+        show_message "Renamed" 1
+    else
+        show_message "Rename failed - see logs" 2
+    fi
+}
+
+delete_file() {
+    # $1 = dir, $2 = filename
+    dir="$1"
+    name="$2"
+
+    if rm -f "$dir/$name"; then
+        show_message "Deleted" 1
+    else
+        show_message "Delete failed - see logs" 2
+        return
+    fi
+
+    # if that was the last episode in a podcast show folder, remove the
+    # now-empty folder too so it stops cluttering the shows list
+    case "$dir" in
+        "$PODCAST_DIR"/*)
+            [ -z "$(ls -A "$dir" 2>/dev/null)" ] && rmdir "$dir" 2>/dev/null
+            ;;
+    esac
+}
+
+file_actions() {
+    # $1 = dir, $2 = filename
+    dir="$1"
+    name="$2"
+
+    printf 'Rename\nDelete\n' >"$WORK/file_action_menu.txt"
+    pick_from_list "$name" "SELECT" "$WORK/file_action_menu.txt"
+    rc=$?
+    [ $rc -ne 0 ] && return
+
+    action="$(cat "$WORK/selected.txt")"
+    case "$action" in
+        Rename) rename_file "$dir" "$name" ;;
+        Delete) delete_file "$dir" "$name" ;;
+    esac
+}
+
+browse_files_dir() {
+    # $1 = dir, $2 = title -> list plain files in $dir, act on the pick
+    dir="$1"
+    title="$2"
+
+    while true; do
+        for entry in "$dir"/*; do
+            [ -f "$entry" ] || continue
+            printf '%s\n' "${entry##*/}"
+        done | sort >"$WORK/files_list.txt"
+
+        if [ ! -s "$WORK/files_list.txt" ]; then
+            show_message "No files here" 2
+            return
+        fi
+
+        pick_from_list "$title" "SELECT" "$WORK/files_list.txt"
+        rc=$?
+        [ $rc -ne 0 ] && return
+
+        selected_file="$(cat "$WORK/selected.txt")"
+        [ -z "$selected_file" ] && continue
+        [ -f "$dir/$selected_file" ] || continue
+
+        file_actions "$dir" "$selected_file"
+    done
+}
+
+browse_podcast_shows() {
+    while true; do
+        for entry in "$PODCAST_DIR"/*; do
+            [ -d "$entry" ] || continue
+            printf '%s\n' "${entry##*/}"
+        done | sort >"$WORK/show_dirs.txt"
+
+        if [ ! -s "$WORK/show_dirs.txt" ]; then
+            show_message "No podcasts downloaded yet" 2
+            return
+        fi
+
+        pick_from_list "Podcasts" "OPEN" "$WORK/show_dirs.txt"
+        rc=$?
+        [ $rc -ne 0 ] && return
+
+        selected_show="$(cat "$WORK/selected.txt")"
+        [ -z "$selected_show" ] && continue
+
+        browse_files_dir "$PODCAST_DIR/$selected_show" "$selected_show"
+    done
+}
+
+files_flow() {
+    printf 'Music\nPodcasts\n' >"$WORK/files_menu.txt"
+    while true; do
+        pick_from_list "Files" "OPEN" "$WORK/files_menu.txt"
+        rc=$?
+        [ $rc -ne 0 ] && return
+
+        choice="$(cat "$WORK/selected.txt")"
+        case "$choice" in
+            "Music") browse_files_dir "$MUSIC_DIR" "Music" ;;
+            "Podcasts") browse_podcast_shows ;;
+        esac
+    done
+}
+
+# ---------------------------------------------------------------------------
 # settings: update the bundled yt-dlp binary in place
 # ---------------------------------------------------------------------------
 
@@ -393,7 +540,7 @@ if ! command -v minui-presenter >/dev/null 2>&1; then
 fi
 echo "all three minui-* tools found, entering main menu" >>"$PAK_DIR/debug.txt"
 
-printf 'Search Music\nSearch Podcast\nUpdate yt-dlp\n' >"$WORK/main_menu.txt"
+printf 'Search Music\nSearch Podcast\nFiles\nUpdate yt-dlp\n' >"$WORK/main_menu.txt"
 
 while true; do
     pick_from_list "Audio Downloader" "SELECT" "$WORK/main_menu.txt"
@@ -404,6 +551,7 @@ while true; do
     case "$choice" in
         "Search Music") music_flow ;;
         "Search Podcast") podcast_flow ;;
+        "Files") files_flow ;;
         "Update yt-dlp") update_ytdlp ;;
     esac
 done
