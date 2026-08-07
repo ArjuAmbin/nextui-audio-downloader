@@ -70,8 +70,6 @@ as expected. A few specific things that are best-effort:
 - **Duplicate titles**: if two search results have the exact same title,
   the tool will always pick the first match when mapping your selection
   back to a download link.
-- The **on-screen keyboard/list/message tools are not bundled** (see setup
-  above) — this was the one piece I couldn't fetch or build myself.
 
 ## Credits
 
