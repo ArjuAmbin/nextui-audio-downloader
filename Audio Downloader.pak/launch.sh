@@ -28,7 +28,15 @@ printf 'launch.sh started\nPAK_DIR=%s\nPAK_NAME=%s\nPLATFORM=%s\nLOGS_PATH=%s\nU
 : "${LOGS_PATH:=$SDCARD_PATH/.userdata/$PLATFORM/logs}"
 : "${USERDATA_PATH:=$SDCARD_PATH/.userdata/$PLATFORM}"
 
-set -x
+# Full command tracing (`set -x`) writes one line per shell command to the
+# log file below -- with several menu layers now in place that's a lot of
+# small writes to the SD card between screens, and was a real contributor
+# to navigation feeling laggy. Keep it opt-in: create an empty file named
+# DEBUG right next to launch.sh (i.e. inside "Audio Downloader.pak/") to
+# turn it back on when something needs troubleshooting from the log file.
+if [ -f "$PAK_DIR/DEBUG" ]; then
+    set -x
+fi
 mkdir -p "$LOGS_PATH"
 rm -f "$LOGS_PATH/$PAK_NAME.txt"
 exec >>"$LOGS_PATH/$PAK_NAME.txt"
@@ -53,6 +61,12 @@ mkdir -p "$WORK"
 
 MUSIC_DIR="$SDCARD_PATH/Music/Downloaded"
 PODCAST_DIR="$SDCARD_PATH/Podcasts"
+
+# persisted in $HOME (not $WORK, which is /tmp and gets wiped) so search
+# history and subscriptions survive across launches/reboots
+MUSIC_HISTORY_FILE="$HOME/music_search_history.txt"
+PODCAST_HISTORY_FILE="$HOME/podcast_search_history.txt"
+PODCAST_SUBS_FILE="$HOME/podcast_subscriptions.tsv"
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -104,16 +118,27 @@ show_message() {
 }
 
 pick_from_list() {
-    # $1 = title, $2 = confirm-text, $3 = file with one entry per line
-    # selected text is left in $WORK/selected.txt ; returns minui-list exit code
+    # $1 = title, $2 = confirm-text, $3 = file with one entry per line,
+    # $4 = optional action button (e.g. "X"), $5 = optional action text.
+    # selected text is left in $WORK/selected.txt ; returns minui-list exit
+    # code (0 = confirmed, 2/3 = cancelled, 4 = action button pressed)
     title="$1"
     confirm="$2"
     srcfile="$3"
+    action_button="$4"
+    action_text="$5"
     rm -f "$WORK/selected.txt"
     killall minui-presenter >/dev/null 2>&1 || true
-    minui-list --disable-auto-sleep --file "$srcfile" --format text \
-        --title "$title" --confirm-text "$confirm" --cancel-text "BACK" \
-        --write-location "$WORK/selected.txt"
+    if [ -n "$action_button" ]; then
+        minui-list --disable-auto-sleep --file "$srcfile" --format text \
+            --title "$title" --confirm-text "$confirm" --cancel-text "BACK" \
+            --action-button "$action_button" --action-text "$action_text" \
+            --write-location "$WORK/selected.txt"
+    else
+        minui-list --disable-auto-sleep --file "$srcfile" --format text \
+            --title "$title" --confirm-text "$confirm" --cancel-text "BACK" \
+            --write-location "$WORK/selected.txt"
+    fi
     return $?
 }
 
@@ -133,15 +158,26 @@ ask_text() {
     return $rc
 }
 
+add_history() {
+    # $1 = history file, $2 = query -> move $2 to the top (deduped),
+    # capped at 10 entries. Tmp file is a sibling of $1 so the final mv
+    # stays on the same filesystem as $HOME (unlike $WORK, which is /tmp).
+    file="$1"
+    query="$2"
+    [ -z "$query" ] && return
+    { printf '%s\n' "$query"; [ -f "$file" ] && grep -vFx "$query" "$file"; } \
+        | head -n 10 >"$file.tmp"
+    mv "$file.tmp" "$file"
+}
+
 # ---------------------------------------------------------------------------
 # music: search + download via YouTube Music (same source the original
 # Music Player pak used)
 # ---------------------------------------------------------------------------
 
-music_flow() {
-    query="$(ask_text "Search Music")"
-    rc=$?
-    [ $rc -ne 0 ] && return
+music_search_flow() {
+    # $1 = search query
+    query="$1"
     [ -z "$query" ] && return
 
     show_message "Searching for \"$query\"..." forever
@@ -202,6 +238,41 @@ $selected_title" forever
     fi
 }
 
+music_search_entry() {
+    # bound directly to the main menu's "Search Music" entry -- goes
+    # straight to the keyboard, no intermediate menu screen
+    query="$(ask_text "Search Music")"
+    rc=$?
+    [ $rc -ne 0 ] && return
+    [ -z "$query" ] && return
+    add_history "$MUSIC_HISTORY_FILE" "$query"
+    music_search_flow "$query"
+}
+
+music_history_flow() {
+    while true; do
+        if [ ! -s "$MUSIC_HISTORY_FILE" ]; then
+            show_message "No search history yet" 2
+            return
+        fi
+
+        pick_from_list "Music History" "SEARCH AGAIN" "$MUSIC_HISTORY_FILE" "X" "CLEAR ALL"
+        rc=$?
+        if [ $rc -eq 4 ]; then
+            rm -f "$MUSIC_HISTORY_FILE"
+            show_message "History cleared" 1
+            continue
+        elif [ $rc -ne 0 ]; then
+            return
+        fi
+
+        query="$(cat "$WORK/selected.txt")"
+        [ -z "$query" ] && continue
+        add_history "$MUSIC_HISTORY_FILE" "$query"
+        music_search_flow "$query"
+    done
+}
+
 # ---------------------------------------------------------------------------
 # podcasts: search iTunes for a show, list its RSS feed, download an episode
 # ---------------------------------------------------------------------------
@@ -243,40 +314,11 @@ parse_feed() {
     paste2 "$WORK/ep_titles.txt" "$WORK/ep_urls.txt" | head -30 >"$WORK/episodes.tsv"
 }
 
-podcast_flow() {
-    query="$(ask_text "Search Podcast")"
-    rc=$?
-    [ $rc -ne 0 ] && return
-    [ -z "$query" ] && return
-
-    show_message "Searching for \"$query\"..." forever
-    itunes_search "$query"
-    killall minui-presenter >/dev/null 2>&1 || true
-
-    if [ ! -s "$WORK/shows.tsv" ]; then
-        echo "--- iTunes search produced no shows. wget stderr: ---"
-        cat "$WORK/itunes_error.txt" 2>/dev/null
-        echo "--- raw itunes.json (first 40 lines): ---"
-        head -40 "$WORK/itunes.json" 2>/dev/null
-        echo "--- end diagnostics ---"
-        show_message "No shows found" 2
-        return
-    fi
-
-    cut -f1 "$WORK/shows.tsv" >"$WORK/show_names_list.txt"
-    pick_from_list "Select a Show" "VIEW EPISODES" "$WORK/show_names_list.txt"
-    rc=$?
-    [ $rc -ne 0 ] && return
-
-    selected_show="$(cat "$WORK/selected.txt")"
-    line_no="$(grep -nFx "$selected_show" "$WORK/show_names_list.txt" | head -1 | cut -d: -f1)"
-    [ -z "$line_no" ] && { show_message "Could not match selection" 2; return; }
-    feed_url="$(sed -n "${line_no}p" "$WORK/shows.tsv" | cut -f2)"
-
-    if [ -z "$feed_url" ]; then
-        show_message "No RSS feed for that show" 2
-        return
-    fi
+podcast_episode_flow() {
+    # $1 = show name, $2 = feed url -> list current episodes (always
+    # fetched fresh, never cached) and download the one picked
+    show_name="$1"
+    feed_url="$2"
 
     show_message "Loading episodes..." forever
     parse_feed "$feed_url"
@@ -294,7 +336,7 @@ podcast_flow() {
     fi
 
     cut -f1 "$WORK/episodes.tsv" >"$WORK/ep_titles_list.txt"
-    pick_from_list "$selected_show" "DOWNLOAD" "$WORK/ep_titles_list.txt"
+    pick_from_list "$show_name" "DOWNLOAD" "$WORK/ep_titles_list.txt"
     rc=$?
     [ $rc -ne 0 ] && return
 
@@ -312,7 +354,7 @@ podcast_flow() {
         *) ext=mp3 ;;
     esac
 
-    show_dir="$PODCAST_DIR/$(sanitize "$selected_show")"
+    show_dir="$PODCAST_DIR/$(sanitize "$show_name")"
     mkdir -p "$show_dir"
     ep_safe="$(sanitize "$selected_ep")"
     tmp_file="$show_dir/.downloading_${ep_safe}.$ext"
@@ -337,6 +379,147 @@ $selected_ep" forever
         rm -f "$tmp_file"
         show_message "Download failed - see logs" 2
     fi
+}
+
+podcast_is_subscribed() {
+    # $1 = feed url -> exit 0 if subscribed, 1 otherwise
+    feed_url="$1"
+    [ -f "$PODCAST_SUBS_FILE" ] || return 1
+    awk -F'\t' -v u="$feed_url" '$2==u{found=1} END{exit !found}' "$PODCAST_SUBS_FILE"
+}
+
+podcast_subscribe() {
+    # $1 = show name, $2 = feed url
+    show_name="$1"
+    feed_url="$2"
+    podcast_is_subscribed "$feed_url" && return
+    printf '%s\t%s\n' "$show_name" "$feed_url" >>"$PODCAST_SUBS_FILE"
+}
+
+podcast_unsubscribe() {
+    # $1 = feed url
+    feed_url="$1"
+    [ -f "$PODCAST_SUBS_FILE" ] || return
+    awk -F'\t' -v u="$feed_url" '$2!=u' "$PODCAST_SUBS_FILE" >"$PODCAST_SUBS_FILE.tmp"
+    mv "$PODCAST_SUBS_FILE.tmp" "$PODCAST_SUBS_FILE"
+}
+
+podcast_search_flow() {
+    # $1 = search query -> confirm opens episodes directly, X toggles
+    # Subscribe/Unsubscribe on the highlighted show without leaving this
+    # list (no separate action-menu screen)
+    query="$1"
+    [ -z "$query" ] && return
+
+    show_message "Searching for \"$query\"..." forever
+    itunes_search "$query"
+    killall minui-presenter >/dev/null 2>&1 || true
+
+    if [ ! -s "$WORK/shows.tsv" ]; then
+        echo "--- iTunes search produced no shows. wget stderr: ---"
+        cat "$WORK/itunes_error.txt" 2>/dev/null
+        echo "--- raw itunes.json (first 40 lines): ---"
+        head -40 "$WORK/itunes.json" 2>/dev/null
+        echo "--- end diagnostics ---"
+        show_message "No shows found" 2
+        return
+    fi
+
+    cut -f1 "$WORK/shows.tsv" >"$WORK/show_names_list.txt"
+
+    while true; do
+        pick_from_list "Select a Show" "VIEW EPISODES" "$WORK/show_names_list.txt" "X" "TOGGLE SUB"
+        rc=$?
+        [ $rc -ne 0 ] && [ $rc -ne 4 ] && return
+
+        selected_show="$(cat "$WORK/selected.txt")"
+        [ -z "$selected_show" ] && continue
+        line_no="$(grep -nFx "$selected_show" "$WORK/show_names_list.txt" | head -1 | cut -d: -f1)"
+        [ -z "$line_no" ] && { show_message "Could not match selection" 2; continue; }
+        feed_url="$(sed -n "${line_no}p" "$WORK/shows.tsv" | cut -f2)"
+
+        if [ -z "$feed_url" ]; then
+            show_message "No RSS feed for that show" 2
+            continue
+        fi
+
+        if [ "$rc" -eq 4 ]; then
+            if podcast_is_subscribed "$feed_url"; then
+                podcast_unsubscribe "$feed_url"
+                show_message "Unsubscribed" 1
+            else
+                podcast_subscribe "$selected_show" "$feed_url"
+                show_message "Subscribed" 1
+            fi
+            continue
+        fi
+
+        podcast_episode_flow "$selected_show" "$feed_url"
+    done
+}
+
+podcast_subscriptions_flow() {
+    # confirm opens episodes directly (always re-fetching the feed live);
+    # X unsubscribes the highlighted show without leaving this list
+    while true; do
+        if [ ! -s "$PODCAST_SUBS_FILE" ]; then
+            show_message "No subscriptions yet" 2
+            return
+        fi
+
+        cut -f1 "$PODCAST_SUBS_FILE" | sort >"$WORK/sub_names_list.txt"
+        pick_from_list "Subscriptions" "VIEW EPISODES" "$WORK/sub_names_list.txt" "X" "UNSUBSCRIBE"
+        rc=$?
+        [ $rc -ne 0 ] && [ $rc -ne 4 ] && return
+
+        selected_show="$(cat "$WORK/selected.txt")"
+        [ -z "$selected_show" ] && continue
+        feed_url="$(awk -F'\t' -v n="$selected_show" '$1==n{print $2; exit}' "$PODCAST_SUBS_FILE")"
+        [ -z "$feed_url" ] && continue
+
+        if [ "$rc" -eq 4 ]; then
+            podcast_unsubscribe "$feed_url"
+            show_message "Unsubscribed" 1
+            continue
+        fi
+
+        podcast_episode_flow "$selected_show" "$feed_url"
+    done
+}
+
+podcast_search_entry() {
+    # bound directly to the main menu's "Search Podcast" entry -- goes
+    # straight to the keyboard, no intermediate menu screen
+    query="$(ask_text "Search Podcast")"
+    rc=$?
+    [ $rc -ne 0 ] && return
+    [ -z "$query" ] && return
+    add_history "$PODCAST_HISTORY_FILE" "$query"
+    podcast_search_flow "$query"
+}
+
+podcast_history_flow() {
+    while true; do
+        if [ ! -s "$PODCAST_HISTORY_FILE" ]; then
+            show_message "No search history yet" 2
+            return
+        fi
+
+        pick_from_list "Podcast History" "SEARCH AGAIN" "$PODCAST_HISTORY_FILE" "X" "CLEAR ALL"
+        rc=$?
+        if [ $rc -eq 4 ]; then
+            rm -f "$PODCAST_HISTORY_FILE"
+            show_message "History cleared" 1
+            continue
+        elif [ $rc -ne 0 ]; then
+            return
+        fi
+
+        query="$(cat "$WORK/selected.txt")"
+        [ -z "$query" ] && continue
+        add_history "$PODCAST_HISTORY_FILE" "$query"
+        podcast_search_flow "$query"
+    done
 }
 
 # ---------------------------------------------------------------------------
@@ -540,7 +723,7 @@ if ! command -v minui-presenter >/dev/null 2>&1; then
 fi
 echo "all three minui-* tools found, entering main menu" >>"$PAK_DIR/debug.txt"
 
-printf 'Search Music\nSearch Podcast\nFiles\nUpdate yt-dlp\n' >"$WORK/main_menu.txt"
+printf 'Search Music\nMusic History\nSearch Podcast\nPodcast History\nPodcast Subscriptions\nFiles\nUpdate yt-dlp\n' >"$WORK/main_menu.txt"
 
 while true; do
     pick_from_list "Audio Downloader" "SELECT" "$WORK/main_menu.txt"
@@ -549,8 +732,11 @@ while true; do
 
     choice="$(cat "$WORK/selected.txt")"
     case "$choice" in
-        "Search Music") music_flow ;;
-        "Search Podcast") podcast_flow ;;
+        "Search Music") music_search_entry ;;
+        "Music History") music_history_flow ;;
+        "Search Podcast") podcast_search_entry ;;
+        "Podcast History") podcast_history_flow ;;
+        "Podcast Subscriptions") podcast_subscriptions_flow ;;
         "Files") files_flow ;;
         "Update yt-dlp") update_ytdlp ;;
     esac
