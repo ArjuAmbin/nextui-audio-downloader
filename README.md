@@ -9,7 +9,7 @@ It can search and download:
   show's RSS feed, downloads an episode to `/Podcasts/<Show Name>/`
 
 It has **no playback functionality** at all — it's meant to be used
-alongside a separate player (like Trimui Classic) that doesn't have its own
+alongside a separate player that doesn't have its own
 downloader.
 
 It was built by extracting the exact search/download commands used
